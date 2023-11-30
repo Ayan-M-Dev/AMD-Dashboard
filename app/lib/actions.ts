@@ -1,0 +1,135 @@
+'use server';
+
+import { z } from 'zod';
+import { sql } from '@vercel/postgres';
+import { revalidatePath } from 'next/cache';
+import { redirect } from 'next/navigation';
+import { signIn } from '@/auth';
+
+const FormSchema = z.object({
+ id: z.string(),
+ employeeId: z.string({
+    invalid_type_error: 'Please select a employee.',
+ }),
+ amount: z.coerce
+    .number()
+    .gt(0, { message: 'Please enter an amount greater than $0.' }),
+ status: z.enum(['pending', 'paid'], {
+    invalid_type_error: 'Please select an invoice status.',
+ }),
+ date: z.string(),
+});
+
+const CreateInvoice = FormSchema.omit({ id: true, date: true });
+const UpdateInvoice = FormSchema.omit({ date: true, id: true });
+
+// This is temporary
+export type State = {
+ errors?: {
+    employeeId?: string[];
+    amount?: string[];
+    status?: string[];
+ };
+ message?: string | null;
+};
+
+// createInvoice is a function that handles the creation of a new invoice in the database.
+export async function createInvoice(formData: FormData) {
+ // Validate form fields using Zod
+ const validatedFields = CreateInvoice.safeParse({
+    employeeId: formData.get('employeeId'),
+    amount: formData.get('amount'),
+    status: formData.get('status'),
+ });
+
+ // If form validation fails, return errors early. Otherwise, continue.
+ if (!validatedFields.success) {
+    return {
+      errors: validatedFields.error.flatten().fieldErrors,
+      message: 'Missing Fields. Failed to Create Invoice.',
+    };
+ }
+
+ // Prepare data for insertion into the database
+ const { employeeId, amount, status } = validatedFields.data;
+ const amountInCents = amount * 100;
+ const date = new Date().toISOString().split('T')[0];
+
+ // Insert data into the database
+ try {
+    await sql`
+      INSERT INTO invoices (employee_id, amount, status, date)
+      VALUES (${employeeId}, ${amountInCents}, ${status}, ${date})
+    `;
+ } catch (error) {
+    // If a database error occurs, return a more specific error.
+    return {
+      message: 'Database Error: Failed to Create Invoice.',
+    };
+ }
+
+ // Revalidate the cache for the invoices page and redirect the user.
+ revalidatePath('/dashboard/invoices');
+ redirect('/dashboard/invoices');
+}
+
+// updateInvoice is a function that handles the update of an existing invoice in the database.
+export async function updateInvoice(
+ id: string,
+ formData: FormData,
+) {
+ const validatedFields = UpdateInvoice.safeParse({
+    employeeId: formData.get('employeeId'),
+    amount: formData.get('amount'),
+    status: formData.get('status'),
+ });
+
+ if (!validatedFields.success) {
+    return {
+      errors: validatedFields.error.flatten().fieldErrors,
+      message: 'Missing Fields. Failed to Update Invoice.',
+    };
+ }
+
+ const { employeeId, amount, status } = validatedFields.data;
+ const amountInCents = amount * 100;
+
+ try {
+    await sql`
+      UPDATE invoices
+      SET employee_id = ${employeeId}, amount = ${amountInCents}, status = ${status}
+      WHERE id = ${id}
+    `;
+ } catch (error) {
+    return { message: 'Database Error: Failed to Update Invoice.' };
+ }
+
+ revalidatePath('/dashboard/invoices');
+ redirect('/dashboard/invoices');
+}
+
+// deleteInvoice is a function that handles the deletion of an existing invoice in the database.
+export async function deleteInvoice(id: string) {
+ try {
+    await sql`DELETE FROM invoices WHERE id = ${id}`;
+    revalidatePath('/dashboard/invoices');
+    return { message: 'Deleted Invoice' };
+ } catch (error) {
+    return { message: 'Database Error: Failed to Delete Invoice.' };
+ }
+}
+
+// authenticate is a function that handles the authentication of a user.
+export async function authenticate(
+ prevState: string | undefined,
+ formData: FormData,
+) {
+ try {
+    await signIn('credentials', Object.fromEntries(formData));
+ } catch (error) {
+    if ((error as Error).message.includes('CredentialsSignin')) {
+      return 'CredentialsSignin';
+    }
+    throw error;
+ }
+}
